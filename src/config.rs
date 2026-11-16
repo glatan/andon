@@ -2,12 +2,13 @@
 
 use std::path::PathBuf;
 
-use crate::{Error, Result};
+use crate::Result;
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    pub api_key: String,
-    pub org_id: String,
+    /// Devin Cloud 用。ローカルのみの運用では未設定でよい。
+    pub api_key: Option<String>,
+    pub org_id: Option<String>,
     pub api_base: String,
     pub bind: String,
     pub db_path: PathBuf,
@@ -20,13 +21,19 @@ pub struct Config {
     pub bypass_approval: bool,
     /// ANDON_JSON 規約の knowledge note ID。`andon setup` で発行し保存する。
     pub knowledge_note_id: Option<String>,
+    /// `devin` 実行ファイル(ローカル adapter 用)。
+    pub devin_bin: PathBuf,
+    /// Devin CLI のデータディレクトリ(sessions.db・session_locks の親)。
+    pub devin_home: PathBuf,
+    /// ローカルセッション一覧に含める最終活動からの日数。
+    pub local_days: u64,
 }
 
 impl Config {
     pub fn from_env() -> Result<Self> {
         Ok(Self {
-            api_key: env("DEVIN_API_KEY")?,
-            org_id: env("DEVIN_ORG_ID")?,
+            api_key: env_opt("DEVIN_API_KEY"),
+            org_id: env_opt("DEVIN_ORG_ID"),
             api_base: env_opt("DEVIN_API_BASE")
                 .unwrap_or_else(|| "https://api.devin.ai".to_owned()),
             bind: env_opt("ANDON_BIND").unwrap_or_else(|| "127.0.0.1:8787".to_owned()),
@@ -39,12 +46,22 @@ impl Config {
                 .unwrap_or(10),
             bypass_approval: env_opt("ANDON_BYPASS_APPROVAL").is_some_and(|v| v == "1"),
             knowledge_note_id: env_opt("ANDON_KNOWLEDGE_NOTE_ID"),
+            devin_bin: env_opt("ANDON_DEVIN_BIN")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("devin")),
+            devin_home: env_opt("ANDON_DEVIN_HOME").map_or_else(
+                || {
+                    std::env::home_dir()
+                        .unwrap_or_default()
+                        .join(".local/share/devin/cli")
+                },
+                PathBuf::from,
+            ),
+            local_days: env_opt("ANDON_LOCAL_DAYS")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(30),
         })
     }
-}
-
-fn env(key: &'static str) -> Result<String> {
-    std::env::var(key).map_err(|_| Error::Config(key))
 }
 
 fn env_opt(key: &str) -> Option<String> {

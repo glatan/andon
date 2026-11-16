@@ -189,21 +189,27 @@ Cloud API とは別に、ローカルマシンで動く Devin と連携する経
 - `request_permission` がホストに返るので「スマホで承認」が実現できる(Cloud API にはない機能)
 - ACP host が `authenticate` で資格情報を渡す設計。こちらも CLI 認証が必要
 
-### 設計への反映案
+### 実装済み: `adapter/devin_local`
 
-```
-adapter/
-  devin_cloud.rs   既存(API ポーリング)
-  devin_local.rs   sessions.db 監視 + devin -p/-r 注入
-```
-
-- `andon send --local` → 指定 cwd で `devin -p` を spawn、sessions.db から新 id を拾う
-- ポーラーは sessions.db を読み、ロック中=実行中、最終 assistant メッセージ+ANDON_JSON→カード化
-- 回答 → `devin -r <id> -p "回答"` を spawn
-- Desktop/対話 CLI のセッションは監視のみ(回答不可)
+- `serve --source local|both` でローカルポーラーを起動(既定は `cloud`)
+- sessions.db を読み取り専用で開き(`mode=ro`、失敗時は通常接続にフォールバック)、直近 `ANDON_LOCAL_DAYS`(既定 30 日)の非 hidden セッションを走査する
+- 状態推定:
+  - 直近の非 system ノードが assistant で tool_calls なし → **入力待ち**(ターン終了)
+  - 未解決の `ask_user_question` tool_call あり → **入力待ち**
+  - 上記で入力待ちかつロック保持 → `running/in_terminal`(一覧のみ・カード化しない)
+  - 入力待ちかつロック未保持 → `suspended/waiting_for_user`(カード化候補)
+  - それ以外でロック保持 → `running/working`、未保持 → `suspended/interrupted`
+- カード化の条件は「待機 + 根拠あり」で、根拠は次のいずれか:
+  - andon 所有セッション(`send --local` で起動・回答成功で `local_owned:<id>` が立つ)
+  - 未解決の `ask_user_question`(引数の `questions[0]` がカードの件名と選択肢になる)
+  - ANDON_JSON 指令付きメッセージ
+- セッション ID は store 上 `local:` 接頭辞を付けて Cloud と区別する。回答は接頭辞でルーティングし `devin -r <id> -p <msg>` を spawn。起動直後(5秒)の失敗だけ検査し、ターン完了は待たない
+- `andon send --local [--cwd]` は ANDON_JSON 規約をプロンプトに添えて `devin -p` を detached 起動し、sessions.db から新 id を拾う
 
 ### ローカル連携の制約
 
-- `devin auth login` が一度必要(現在は Desktop のみ認証済み)
-- TUI で開いているセッションへの注入は不可
-- ACP adapter は permission 承認カードまで取れる本命だが JSON-RPC クライアント実装が要る
+- `devin auth login` が一度必要(Desktop の認証とは別経路)。未ログインでは監視は動くが回答注入とセッション起動が失敗する
+- Desktop/TUI がロックを握っているセッションへの注入は不可 → `in_terminal` 表示のみ
+- ロック解放後(Desktop 終了・プロセス死)の待機セッションは `-r` で再開できるためカード化対象になる
+- ACP adapter は permission 承認カードまで取れる本命だが JSON-RPC クライアント実装が要る(未着手)
+- sessions.db のスキーマは非公開インターフェースで、CLI 更新で変わる可能性がある。失敗時はポーリングエラーとして表面化する設計に留め、スキーマ変更への追随はその都度行う

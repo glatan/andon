@@ -154,9 +154,66 @@ export ANDON_NTFY_TOPIC=andon-あなたの秘密のトピック名
 
 ntfy.sh の場合、同じトピック名をスマホの ntfy アプリで Subscribe すると、判断待ちと承認待ちが push で届く。通知のクリック先はセッションの Devin URL である。自前の ntfy サーバを使う場合は `ANDON_NTFY_BASE` で差し替える。
 
+## ローカル Devin(CLI/Desktop)を使う
+
+Devin Cloud ではなく、ローカルマシンで動く Devin CLI/Desktop のセッションも監視できる。API キーは不要で、`~/.local/share/devin/cli/sessions.db` を直接読んで状態を推定し、回答は `devin -r` で注入する。
+
+```mermaid
+flowchart LR
+    subgraph local[ローカルマシン]
+        D[Devin CLI/Desktop] -->|書き込み| DB[(sessions.db)]
+        DB -->|読み取り専用| P[andon poller]
+        P --> SRV[server + PWA]
+        SRV -->|"devin -r id -p 回答"| D
+    end
+    PH[スマホのブラウザ] <-->|SSE / REST| SRV
+```
+
+### セットアップ
+
+1. `devin auth login` を一度実行する。監視だけなら不要だが、回答の注入と `send --local` によるセッション起動には CLI 側の認証が必要である(Desktop のログインとは別経路)。
+2. `andon serve --source local` で起動する。`--source both` にすると Cloud API と同時に監視する。
+
+### セッションを作る
+
+```sh
+andon send --local --cwd ~/Projects/containers "builder を調査して報告して"
+```
+
+指定した cwd で `devin -p` をバックグラウンド起動する。ANDON_JSON 規約はプロンプトに自動で添えられる。ターンが終わると `devin` プロセスは終了し、andon が「入力待ち」を検出してカードを作る。
+
+### 状態の読みかた(ローカル)
+
+ローカルセッションの ID は `local:` 接頭辞付きで表示される。状態は sessions.db の内容とプロセスロックから推定される。
+
+| 表示 | 意味 | 要操作 |
+|---|---|---|
+| `running/working` | Devin が作業中 | なし |
+| `running/in_terminal` | 入力待ちだが端末/Desktop が開いている | 端末で応答(andon からは回答不可) |
+| `suspended/waiting_for_user` | 入力待ちで注入可能 | カードで回答 |
+| `suspended/interrupted` | プロセスがいないまま途中停止 | `devin -r` で手動再開 |
+
+### どのセッションがカードになるか
+
+ローカルセッションは `waiting_for_user` だけではカード化されない。カードになるのは「待機中」+ 次のいずれかである。
+
+- `andon send --local` で起動した、または andon 経由の回答が一度でも通ったセッション(所有セッション)
+- Devin が `ask_user_question` で質問を投げているセッション。質問文と選択肢がそのままカードになる
+- 最終メッセージに ANDON_JSON 指令があるセッション
+
+Desktop/TUI で開いたままのセッションはロックが残っているためカード化されない。Desktop を閉じるかプロセスが死んだあとに待機状態が残れば、andon から `-r` で引き継げる。
+
+### 注意
+
+- `devin -r` はターンが終わるまでプロセスが残る。回答の送信は「起動を確認できた」時点で完了扱いになる
+- sessions.db のスキーマは非公開の内部構造であり、CLI 更新で変わる可能性がある
+- `ANDON_DEVIN_HOME` でデータディレクトリ、`ANDON_DEVIN_BIN` で実行ファイルの場所を変えられる
+
 ## トラブルシューティング
 
 - **カードが現れない**: `andon poll` を手で回す。`sessions` タブに対象セッション自体が出ないなら `andon` タグが付いているか確認する。`status_detail` が `waiting_for_user` でも最終メッセージに Devin 発言がないケースではカードは作られない。
 - **回答が送れない**: セッションが suspended に変わった可能性がある。メッセージ送信は自動 resume するはずだが、失敗時は Devin アプリ側で確認する。
 - **ポーリングが失敗し続ける**: serve の標準エラーに `[andon] ポーリング失敗:` と出る。API キー・org ID・権限を `andon ping` で切り分ける。
 - **選択肢が出ない・文字だけの質問になる**: Devin が ANDON_JSON を付けていない。`andon setup` 済みか、そのセッションに note が添付されているか(`andon send` 経由か)を確認する。
+- **ローカルカードに回答できない**: `devin auth login` 未実施だと `devin -r` が失敗する。カードのセッションが `in_terminal` なら端末/Desktop で開いているため、そちらで応答する。
+- **ローカルセッションが一覧に出ない**: `ANDON_LOCAL_DAYS` の期間外か、`ANDON_DEVIN_HOME` が実際のデータディレクトリと違う可能性がある。`andon sessions --local` で確認する。

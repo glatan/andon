@@ -78,18 +78,19 @@ struct ApiMessage {
 }
 
 impl DevinCloud {
-    pub fn new(cfg: &Config) -> Self {
+    /// `DEVIN_API_KEY`/`DEVIN_ORG_ID` が未設定なら Error::Config。
+    pub fn new(cfg: &Config) -> Result<Self> {
         let agent = ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(30)))
             .http_status_as_error(false)
             .build()
             .new_agent();
-        Self {
+        Ok(Self {
             base: cfg.api_base.trim_end_matches('/').to_owned(),
-            org: cfg.org_id.clone(),
-            key: cfg.api_key.clone(),
+            org: cfg.org_id.clone().ok_or(Error::Config("DEVIN_ORG_ID"))?,
+            key: cfg.api_key.clone().ok_or(Error::Config("DEVIN_API_KEY"))?,
             agent,
-        }
+        })
     }
 
     fn url(&self, path: &str) -> String {
@@ -235,7 +236,7 @@ impl DevinCloud {
             &json!({
                 "name": NOTE_NAME,
                 "trigger": "人間への確認・判断・選択を仰ぐ必要があるとき",
-                "body": NOTE_BODY,
+                "body": card::INSTRUCTION,
             }),
         )?;
         Ok(v["note_id"].as_str().unwrap_or_default().to_owned())
@@ -296,7 +297,7 @@ fn card_for_user_wait(
     if store.has_pending_decision(&s.session_id, &event_id)? {
         return Ok(());
     }
-    let (body, payload) = split_body(&message);
+    let (body, payload) = card::body_excerpt(&message);
     let card = card::parse(&message);
     let title = card
         .as_ref()
@@ -366,24 +367,3 @@ fn card_for_approval(
     }
     Ok(())
 }
-
-/// 表示用本文を ANDON_JSON マーカーで切り詰める。
-fn split_body(message: &str) -> (String, String) {
-    let body = match message.find(card::MARKER) {
-        Some(at) => message[..at].trim().to_owned(),
-        None => message.trim().to_owned(),
-    };
-    let summary: String = body.chars().take(300).collect();
-    (body, summary)
-}
-
-/// knowledge note に書く ANDON_JSON 規約の本文。
-const NOTE_BODY: &str = r#"人間に判断・確認・選択を仰ぐ必要があるときは、返答メッセージの末尾に次の形式のカード指令を付けること。
-
-ANDON_JSON{"title":"短い件名","summary":"背景の要約(任意・1文)","diagram":{"type":"mermaid","source":"graph LR; A-->B"},"options":[{"id":"a","label":"案Aの説明"},{"id":"b","label":"案Bの説明"}]}
-
-- options は 2〜4 個。id は短い英字、label は人間が読んで選ぶ説明文。
-- 図解があると判断しやすい場合は mermaid で diagram を書く。
-- 指令の前に通常の説明文を書いてよい。指令は必ずメッセージの末尾に置く。
-- 単純な yes/no の確認でもこの形式を使う。
-"#;

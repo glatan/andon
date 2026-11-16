@@ -18,6 +18,8 @@ pub enum Error {
     NotFound(i64),
     #[error("decision は回答済みです: {0}")]
     AlreadyAnswered(i64),
+    #[error("ローカル Devin: {0}")]
+    Local(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

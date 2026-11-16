@@ -8,6 +8,18 @@ use crate::types::{CardDiagram, CardOption};
 /// メッセージ末尾のカード指令マーカー。
 pub const MARKER: &str = "ANDON_JSON";
 
+/// エージェントへ注入する ANDON_JSON 規約の説明文。
+/// Devin Cloud の knowledge note・ローカルセッションのプロンプトの双方で使う。
+pub const INSTRUCTION: &str = r#"人間に判断・確認・選択を仰ぐ必要があるときは、返答メッセージの末尾に次の形式のカード指令を付けること。
+
+ANDON_JSON{"title":"短い件名","summary":"背景の要約(任意・1文)","diagram":{"type":"mermaid","source":"graph LR; A-->B"},"options":[{"id":"a","label":"案Aの説明"},{"id":"b","label":"案Bの説明"}]}
+
+- options は 2〜4 個。id は短い英字、label は人間が読んで選ぶ説明文。
+- 図解があると判断しやすい場合は mermaid で diagram を書く。
+- 指令の前に通常の説明文を書いてよい。指令は必ずメッセージの末尾に置く。
+- 単純な yes/no の確認でもこの形式を使う。
+"#;
+
 /// `ANDON_JSON{...}` ペイロード。全フィールド省略可だが空オブジェクトは無効。
 #[derive(Debug, Clone, Deserialize)]
 pub struct CardPayload {
@@ -46,6 +58,16 @@ pub fn answer_message(option: Option<&CardOption>, text: Option<&str>) -> String
         (Some(o), None) => format!("{}: {}", o.id, o.label),
         (None, None) => "承認".to_owned(),
     }
+}
+
+/// 表示用本文を ANDON_JSON マーカーで切り詰める。(body, 通知用抜粋) を返す。
+pub fn body_excerpt(message: &str) -> (String, String) {
+    let body = match message.find(MARKER) {
+        Some(at) => message[..at].trim().to_owned(),
+        None => message.trim().to_owned(),
+    };
+    let summary: String = body.chars().take(300).collect();
+    (body, summary)
 }
 
 fn strip_fence(s: &str) -> &str {

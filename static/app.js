@@ -109,9 +109,13 @@
   }
 
   function sessionRow(s) {
-    const a = el("a", "srow");
-    a.href = s.url;
-    a.target = "_blank";
+    // ローカルセッション(local:<id>)は外部リンクを持たないのでリンク化しない
+    const link = /^https?:/.test(s.url);
+    const a = el(link ? "a" : "div", "srow");
+    if (link) {
+      a.href = s.url;
+      a.target = "_blank";
+    }
     const kind = s.status_detail || s.status || "other";
     const dot = el("span", `dot ${["working", "waiting_for_user", "waiting_for_approval", "finished"].includes(kind) ? kind : "other"}`);
     a.append(dot, el("span", "stitle", s.title || s.session_id), el("span", "sst", `${s.status}${s.status_detail ? "/" + s.status_detail : ""} · ${ago(s.updated_at)}`));

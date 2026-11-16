@@ -18,6 +18,7 @@ use tokio_stream::StreamExt as _;
 use tokio_stream::wrappers::BroadcastStream;
 
 use crate::adapter::devin_cloud::{self, DevinCloud};
+use crate::adapter::devin_local::{self, DevinLocal};
 use crate::notify;
 use crate::store::Store;
 use crate::{Error, Result, answer};
@@ -27,7 +28,9 @@ const APP_JS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/static/a
 
 pub struct AppState {
     pub store: Arc<Store>,
-    pub devin: Arc<DevinCloud>,
+    /// 起動したソースに応じて Some。cloud 未使用なら None。
+    pub devin: Option<Arc<DevinCloud>>,
+    pub local: Option<Arc<DevinLocal>>,
     pub token: Option<String>,
     pub tx: broadcast::Sender<String>,
     pub notify: Option<notify::Target>,
@@ -105,10 +108,12 @@ async fn answer_handler(
 ) -> std::result::Result<Json<Value>, ApiError> {
     let store = st.store.clone();
     let devin = st.devin.clone();
+    let local = st.local.clone();
     let message = tokio::task::spawn_blocking(move || {
         answer::submit(
             &store,
-            &devin,
+            devin.as_deref(),
+            local.as_deref(),
             id,
             req.option_id.as_deref(),
             req.text.as_deref(),
@@ -120,16 +125,23 @@ async fn answer_handler(
     Ok(Json(json!({"message": message})))
 }
 
-/// 手動ポーリング(検証・デバッグ用)。
+/// 手動ポーリング(検証・デバッグ用)。起動中の全ソースを 1 回ずつ回す。
 async fn poll_handler(
     State(st): State<Arc<AppState>>,
 ) -> std::result::Result<StatusCode, ApiError> {
     let store = st.store.clone();
     let devin = st.devin.clone();
+    let local = st.local.clone();
     let tx = st.tx.clone();
     let notify = st.notify.clone();
     tokio::task::spawn_blocking(move || {
-        devin_cloud::poll_once(&devin, &store, &tx, notify.as_ref())
+        if let Some(d) = &devin {
+            devin_cloud::poll_once(d, &store, &tx, notify.as_ref())?;
+        }
+        if let Some(l) = &local {
+            devin_local::poll_once(l, &store, &tx, notify.as_ref())?;
+        }
+        Ok::<(), Error>(())
     })
     .await
     .map_err(|e| ApiError(Error::Io(std::io::Error::other(e.to_string()))))??;
