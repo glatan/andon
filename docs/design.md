@@ -149,8 +149,61 @@ Rust。edition 2024、依存は `=` で完全固定(oci/containers の流儀に�
 
 ## 未決事項(実機検証が必要)
 
-- `qs` パラメータの実際の形: パス構成は正しいことを確認済み(ダミー認証で正規の 403 が返った)。flattened パラメータ(`first`/`tags`/`is_archived`)が通るかは本物のキーで要検証。`list_sessions` は 422 を受けたら `qs` JSON 文字列へ自動フォールバックする実装にしてある
+- ~~`qs` パラメータの実際の形~~ **解決済み**: flattened パラメータ(`first`/`tags`/`is_archived`)で実 API から正常応答を確認。`qs` JSON フォールバックは残してある
 - `structured_output` の中間更新が読めるか
 - `waiting_for_user` 中のメッセージ送信が即 unblock になるか(送ると `status_detail` が `working` に戻るか)
 - ポーリング間隔と 429 の実際の挙動
 - knowledge note の `trigger` 条件をどう書けば判断要求時にだけ効くか
+
+## ローカル Devin(CLI/Desktop)連携 — 調査結果
+
+Cloud API とは別に、ローカルマシンで動く Devin と連携する経路を調査した。
+
+### 利用できる資格情報
+
+`~/.local/share/devin/credentials.toml` の `windsurf_api_key`(`devin-` 始まり)は **v3 API で有効**(`GET /v3/self` で 200、`principal_type: windsurf_session`)。org_id もここから得られる。つまり `devin auth login` なしでも Cloud API 側は動く。
+一方 `devin -p` や `devin acp` は CLI 側の `devin auth login` を要求する(Desktop の認証とは別経路)。
+
+### sessions.db — ローカルセッションの監視
+
+`~/.local/share/devin/cli/sessions.db` にローカル(CLI/Desktop)の全セッションが入る。
+
+- `sessions`: id・title・working_directory・agent_mode・last_activity_at
+- `message_nodes`: `chat_message` JSON(role=assistant/user/tool、content、tool_calls)。最終 assistant 発言はここから取れる
+- `tool_call_state`: ACP ToolCall/ToolCallUpdate の JSON。`tool_call_update_json IS NULL` = 実行中ツール
+- `live_row_times`: 実行中の tool/thought 行
+- `session_locks/<id>.lock`: 中身は PID。ファイル存在=そのセッションがプロセスを握っている
+
+`waiting_for_user` 相当の検出ヒューリスティック: ロック有り(プロセス生存)+ 最終メッセージが assistant 発言 + 未完了 tool_call 無し。精度は要検証。
+
+### `devin -p` / `-r` — ヘッドレス実行と回答注入
+
+- `devin -p "タスク"` は非対話で 1 ターン走って終了する
+- `devin -r <id> -p "回答"` で既存セッションにメッセージ注入して再開できる(回答チャネル)
+- TUI がロックを握っているセッションへの注入は不可 → andon が spawn して所有するヘッドレス運用前提
+- 要 `devin auth login`
+
+### `devin acp` — 双方向プロトコル
+
+- stdio JSON-RPC。実機でサーバ起動を確認
+- `request_permission` がホストに返るので「スマホで承認」が実現できる(Cloud API にはない機能)
+- ACP host が `authenticate` で資格情報を渡す設計。こちらも CLI 認証が必要
+
+### 設計への反映案
+
+```
+adapter/
+  devin_cloud.rs   既存(API ポーリング)
+  devin_local.rs   sessions.db 監視 + devin -p/-r 注入
+```
+
+- `andon send --local` → 指定 cwd で `devin -p` を spawn、sessions.db から新 id を拾う
+- ポーラーは sessions.db を読み、ロック中=実行中、最終 assistant メッセージ+ANDON_JSON→カード化
+- 回答 → `devin -r <id> -p "回答"` を spawn
+- Desktop/対話 CLI のセッションは監視のみ(回答不可)
+
+### ローカル連携の制約
+
+- `devin auth login` が一度必要(現在は Desktop のみ認証済み)
+- TUI で開いているセッションへの注入は不可
+- ACP adapter は permission 承認カードまで取れる本命だが JSON-RPC クライアント実装が要る
