@@ -89,6 +89,9 @@ impl DevinLocal {
     /// ターン完了は待たない。
     pub fn resume(&self, session_id: &str, message: &str) -> Result<()> {
         let id = session_id.strip_prefix(LOCAL_PREFIX).unwrap_or(session_id);
+        if !valid_id(id) {
+            return Err(Error::Local(format!("不正なセッション ID: {id}")));
+        }
         let mut child = Command::new(&self.bin)
             .args(["-r", id, "-p", message])
             .stdin(Stdio::null())
@@ -167,7 +170,14 @@ impl DevinLocal {
     }
 
     /// 読み取り専用で開く(WAL の shm が必要な環境では通常接続に落とす)。
+    /// DB が存在しない場合は作成せずエラーにする。
     fn connect(&self) -> Result<Connection> {
+        if !self.db_path.exists() {
+            return Err(Error::Local(format!(
+                "sessions.db が見つかりません: {}",
+                self.db_path.display()
+            )));
+        }
         let uri = format!("file:{}?mode=ro", self.db_path.display());
         Ok(Connection::open(&uri).or_else(|_| Connection::open(&self.db_path))?)
     }
@@ -192,7 +202,11 @@ impl DevinLocal {
     }
 
     /// ロックファイルの PID が生存なら true(Desktop/TUI が掴んでいる)。
+    /// パス結合前に ID を検証して traversal を防ぐ。
     fn lock_held(&self, id: &str) -> bool {
+        if !valid_id(id) {
+            return false;
+        }
         let Ok(body) = std::fs::read_to_string(self.locks_dir.join(format!("{id}.lock"))) else {
             return false;
         };
@@ -315,6 +329,17 @@ fn tool_resolved(conn: &Connection, session_id: &str, call_id: &str) -> Result<b
         |r| r.get(0),
     )?;
     Ok(n > 0)
+}
+
+/// セッション ID の妥当性。CLI 引数注入とパス結合 traversal の双方を防ぐ。
+/// 先頭は英数字のみ許可し `-` 始まり(フラグ注入)を排除する。
+fn valid_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id.bytes().next().is_some_and(|b| b.is_ascii_alphanumeric())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
 }
 
 /// PID の生存確認。/proc を優先し、なければ kill -0 にフォールバック。
@@ -566,6 +591,16 @@ mod tests {
             r#"{"role":"tool","content":"out","tool_call_id":"exec:0#a"}"#,
         );
         assert!(tool_resolved(&conn, "s", "exec:0#a").unwrap());
+    }
+
+    #[test]
+    fn valid_id_rejects_flag_and_traversal() {
+        assert!(valid_id("sandy-krill"));
+        assert!(valid_id("276dbb78bfd2453f9852d5aae5fe0fd1"));
+        assert!(!valid_id("--resume"));
+        assert!(!valid_id("../etc/passwd"));
+        assert!(!valid_id("a b"));
+        assert!(!valid_id(""));
     }
 
     #[test]

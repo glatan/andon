@@ -114,6 +114,12 @@ fn note_id(cfg: &Config, store: &Store) -> Result<Option<String>> {
     store.meta_get("knowledge_note_id")
 }
 
+/// バインドアドレスが loopback かどうか。
+fn is_loopback_bind(bind: &str) -> bool {
+    let host = bind.rsplit_once(':').map(|(h, _)| h).unwrap_or(bind);
+    host.starts_with("127.") || matches!(host, "localhost" | "::1" | "[::1]")
+}
+
 fn ntfy_target(cfg: &Config) -> Option<notify::Target> {
     cfg.ntfy_topic.clone().map(|topic| notify::Target {
         base: cfg.ntfy_base.clone(),
@@ -123,6 +129,13 @@ fn ntfy_target(cfg: &Config) -> Option<notify::Target> {
 
 fn serve(source: Source) -> Result<()> {
     let (cfg, store) = open_store()?;
+    if cfg.token.is_none() && !is_loopback_bind(&cfg.bind) {
+        eprintln!(
+            "[andon] 警告: ANDON_TOKEN 未設定のまま非ローカルアドレス({})にバインドします。\
+             到達できる誰でもカードの閲覧・回答が可能です",
+            cfg.bind
+        );
+    }
     let devin = match source {
         Source::Cloud | Source::Both => Some(cloud(&cfg)?),
         Source::Local => None,
@@ -258,4 +271,18 @@ fn ping() -> Result<()> {
     let v = cloud(&cfg)?.self_check()?;
     println!("{}", serde_json::to_string_pretty(&v)?);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_loopback_bind;
+
+    #[test]
+    fn loopback_bind_detection() {
+        assert!(is_loopback_bind("127.0.0.1:8787"));
+        assert!(is_loopback_bind("localhost:8787"));
+        assert!(is_loopback_bind("[::1]:8787"));
+        assert!(!is_loopback_bind("0.0.0.0:8787"));
+        assert!(!is_loopback_bind("192.168.1.10:8787"));
+    }
 }

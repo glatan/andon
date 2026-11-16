@@ -60,14 +60,18 @@ pub fn answer_message(option: Option<&CardOption>, text: Option<&str>) -> String
     }
 }
 
+/// カード本文の保存上限。エージェント出力が肥大化するのを防ぐ。
+const BODY_LIMIT: usize = 4000;
+
 /// 表示用本文を ANDON_JSON マーカーで切り詰める。(body, 通知用抜粋) を返す。
+/// body は BODY_LIMIT 文字で丸める。
 pub fn body_excerpt(message: &str) -> (String, String) {
     let body = match message.find(MARKER) {
         Some(at) => message[..at].trim().to_owned(),
         None => message.trim().to_owned(),
     };
     let summary: String = body.chars().take(300).collect();
-    (body, summary)
+    (body.chars().take(BODY_LIMIT).collect(), summary)
 }
 
 fn strip_fence(s: &str) -> &str {

@@ -38,7 +38,7 @@
   async function renderDiagram(container, source) {
     if (!mermaid) {
       mermaid = (await import("https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs")).default;
-      mermaid.initialize({ startOnLoad: false });
+      mermaid.initialize({ startOnLoad: false, securityLevel: "strict" });
     }
     const id = `m${Math.random().toString(36).slice(2)}`;
     try {

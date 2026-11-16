@@ -154,6 +154,8 @@ export ANDON_NTFY_TOPIC=andon-あなたの秘密のトピック名
 
 ntfy.sh の場合、同じトピック名をスマホの ntfy アプリで Subscribe すると、判断待ちと承認待ちが push で届く。通知のクリック先はセッションの Devin URL である。自前の ntfy サーバを使う場合は `ANDON_NTFY_BASE` で差し替える。
 
+通知本文にはカードの抜粋(最大300文字)が含まれる。セッションの作業内容が ntfy サーバを経由することになるため、公開 ntfy.sh を使うときは推測しにくいトピック名にすること。機微な内容を流したくない場合は `ANDON_NTFY_BASE` で自前のサーバに切り替える。
+
 ## ローカル Devin(CLI/Desktop)を使う
 
 Devin Cloud ではなく、ローカルマシンで動く Devin CLI/Desktop のセッションも監視できる。API キーは不要で、`~/.local/share/devin/cli/sessions.db` を直接読んで状態を推定し、回答は `devin -r` で注入する。
