@@ -16,6 +16,8 @@ pub struct Config {
     pub token: Option<String>,
     pub ntfy_base: String,
     pub ntfy_topic: Option<String>,
+    /// スマホから到達できる andon の URL。設定すると ntfy 通知のタップ先になる。
+    pub public_url: Option<String>,
     pub poll_interval_secs: u64,
     /// セッション作成時に bypass_approval を付けるか。
     pub bypass_approval: bool,
@@ -43,6 +45,7 @@ impl Config {
             token: env_opt("ANDON_TOKEN"),
             ntfy_base: env_opt("ANDON_NTFY_BASE").unwrap_or_else(|| "https://ntfy.sh".to_owned()),
             ntfy_topic: env_opt("ANDON_NTFY_TOPIC"),
+            public_url: env_opt("ANDON_PUBLIC_URL"),
             poll_interval_secs: env_opt("ANDON_POLL_INTERVAL")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(10),

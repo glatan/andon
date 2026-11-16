@@ -61,12 +61,13 @@ andon send --local --cwd ~/Projects/containers "builder を調査して報告し
 |---|---|---|
 | `DEVIN_API_KEY` | cloud 時 | `cog_` API キー。権限: `ViewOrgSessions` + `ManageOrgSessions` + `UseDevinSessions` |
 | `DEVIN_ORG_ID` | cloud 時 | 組織 ID |
-| `ANDON_TOKEN` | | PWA/API の Bearer トークン(未設定なら認証なし) |
+| `ANDON_TOKEN` | | PWA/API の Bearer トークン(未設定なら認証なし。非ローカル公開時は必須) |
 | `ANDON_BIND` | | バインドアドレス(既定 `127.0.0.1:8787`) |
 | `ANDON_DB` | | SQLite パス(既定 `./andon.db`) |
 | `ANDON_POLL_INTERVAL` | | ポーリング秒間隔(既定 10) |
 | `ANDON_NTFY_TOPIC` | | ntfy.sh トピック(設定時のみ通知) |
 | `ANDON_NTFY_BASE` | | ntfy サーバ(既定 `https://ntfy.sh`) |
+| `ANDON_PUBLIC_URL` | | ntfy 通知のタップ先。スマホから見える andon の URL を入れる |
 | `ANDON_BYPASS_APPROVAL` | | `1` でセッション作成時に safe mode 承認を回避 |
 | `ANDON_KNOWLEDGE_NOTE_ID` | | note ID の上書き(通常は `setup` が DB に保存) |
 | `ANDON_DEVIN_BIN` | | `devin` 実行ファイル(既定 `devin`) |

@@ -136,6 +136,7 @@ fn ntfy_target(cfg: &Config) -> Option<notify::Target> {
     cfg.ntfy_topic.clone().map(|topic| notify::Target {
         base: cfg.ntfy_base.clone(),
         topic,
+        public_url: cfg.public_url.clone(),
     })
 }
 
