@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#15181d">
+<title>andon</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; margin: 0; }
+  body { font-family: system-ui, sans-serif; background: #15181d; color: #e6e9ee; padding: 0 12px 48px; }
+  header { display: flex; align-items: baseline; gap: 10px; padding: 14px 2px; position: sticky; top: 0; background: #15181d; }
+  h1 { font-size: 18px; }
+  #badge { color: #8b93a1; font-size: 13px; }
+  h2 { font-size: 13px; color: #8b93a1; font-weight: normal; margin: 20px 2px 8px; text-transform: uppercase; letter-spacing: .08em; }
+  .card { background: #1e232b; border: 1px solid #2b313c; border-radius: 10px; padding: 14px; margin-bottom: 10px; }
+  .card.pending { border-color: #e8a23d; }
+  .card .meta { font-size: 12px; color: #8b93a1; margin-bottom: 6px; }
+  .card .title { font-size: 15px; font-weight: 600; margin-bottom: 8px; }
+  .card .body { font-size: 13px; color: #b8bfca; white-space: pre-wrap; word-break: break-word; margin-bottom: 10px; max-height: 160px; overflow-y: auto; }
+  .card .diagram { background: #fff; border-radius: 6px; padding: 8px; margin-bottom: 10px; overflow-x: auto; }
+  .opts { display: flex; flex-direction: column; gap: 8px; }
+  .opts button, .free button, .linkbtn { display: block; width: 100%; padding: 12px; font-size: 15px; border-radius: 8px; border: 1px solid #3a4150; background: #262c37; color: #e6e9ee; text-align: left; cursor: pointer; }
+  .opts button:active, .free button:active { background: #313947; }
+  .linkbtn { text-align: center; text-decoration: none; color: #7ab3ff; }
+  .free { display: flex; gap: 8px; margin-top: 8px; }
+  .free input { flex: 1; padding: 12px; font-size: 15px; border-radius: 8px; border: 1px solid #3a4150; background: #11141a; color: #e6e9ee; }
+  .free button { width: auto; white-space: nowrap; }
+  .answered { color: #6fbf73; font-size: 13px; margin-top: 6px; }
+  .expired { color: #8b93a1; font-size: 13px; margin-top: 6px; }
+  .srow { display: flex; align-items: center; gap: 8px; padding: 10px 14px; background: #1e232b; border: 1px solid #2b313c; border-radius: 10px; margin-bottom: 8px; text-decoration: none; color: inherit; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+  .dot.working { background: #e8a23d; }
+  .dot.waiting_for_user, .dot.waiting_for_approval { background: #e8526a; }
+  .dot.finished { background: #6fbf73; }
+  .dot.other { background: #566070; }
+  .srow .stitle { flex: 1; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .srow .sst { font-size: 12px; color: #8b93a1; }
+  #empty { color: #566070; font-size: 13px; padding: 20px 2px; }
+</style>
+</head>
+<body>
+<header><h1>andon</h1><span id="badge"></span></header>
+<main>
+  <section id="decisions"></section>
+  <h2>sessions</h2>
+  <section id="sessions"></section>
+</main>
+<script src="/app.js"></script>
+</body>
+</html>
