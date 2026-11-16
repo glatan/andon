@@ -7,6 +7,7 @@ use std::time::Duration;
 use clap::{Parser, Subcommand, ValueEnum};
 use tokio::sync::broadcast;
 
+use crate::adapter::devin_acp::DevinAcp;
 use crate::adapter::devin_cloud::{self, DevinCloud};
 use crate::adapter::devin_local::{self, DevinLocal};
 use crate::config::Config;
@@ -114,6 +115,17 @@ fn note_id(cfg: &Config, store: &Store) -> Result<Option<String>> {
     store.meta_get("knowledge_note_id")
 }
 
+/// credentials.toml から windsurf_api_key を読む(値はログに出さない)。
+fn acp_api_key(cfg: &Config) -> Option<String> {
+    let body = std::fs::read_to_string(&cfg.devin_credentials).ok()?;
+    body.lines().find_map(|line| {
+        let (k, v) = line.split_once('=')?;
+        (k.trim() == "windsurf_api_key")
+            .then(|| v.trim().trim_matches('"').to_owned())
+            .filter(|v| !v.is_empty())
+    })
+}
+
 /// バインドアドレスが loopback かどうか。
 fn is_loopback_bind(bind: &str) -> bool {
     let host = bind.rsplit_once(':').map(|(h, _)| h).unwrap_or(bind);
@@ -153,16 +165,42 @@ fn serve(source: Source) -> Result<()> {
             devin_cloud::run_poller(d, store, tx, interval, notify);
         });
     }
+    let acp = match (&dl, acp_api_key(&cfg)) {
+        (Some(l), Some(key)) => {
+            match DevinAcp::connect(
+                &cfg.devin_bin,
+                &key,
+                store.clone(),
+                tx.clone(),
+                notify.clone(),
+            ) {
+                Ok(a) => {
+                    eprintln!("[andon] devin acp 接続成功(pid={})", a.pid());
+                    l.allow_pid(a.pid());
+                    Some(a)
+                }
+                Err(e) => {
+                    eprintln!("[andon] ACP 接続失敗(devin -r にフォールバック): {e}");
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
     if let Some(l) = &dl {
         let (l, store, tx, notify) = (l.clone(), store.clone(), tx.clone(), notify.clone());
         std::thread::spawn(move || {
             devin_local::run_poller(l, store, tx, interval, notify);
         });
     }
+    let note_id = note_id(&cfg, &store)?;
     let state = Arc::new(AppState {
         store,
         devin,
         local: dl,
+        acp,
+        note_id,
+        bypass_approval: cfg.bypass_approval,
         token: cfg.token.clone(),
         tx,
         notify,
@@ -178,8 +216,12 @@ fn send(prompt: &str, as_local: bool, cwd: Option<&std::path::Path>) -> Result<(
             .map(PathBuf::from)
             .unwrap_or(std::env::current_dir()?)
             .canonicalize()?;
+        // ワンショット ACP は使わない: acp プロセスがエージェント実行体のため、
+        // CLI 終了でプロセスが畳まれターンが死ぬ。起動は devin -p(または
+        // serve 経由の POST /api/sessions)で行う。
+        let full = format!("{prompt}\n\n{}", card::INSTRUCTION);
         let since = now();
-        dl.spawn_session(&cwd, &format!("{prompt}\n\n{}", card::INSTRUCTION))?;
+        dl.spawn_session(&cwd, &full)?;
         match dl.wait_new_session(since, Duration::from_secs(15))? {
             Some(id) => {
                 store.meta_set(&format!("local_owned:{id}"), "1")?;
@@ -206,7 +248,16 @@ fn decide(id: i64, text: &str) -> Result<()> {
         None
     };
     let dl = local(&cfg);
-    let message = answer::submit(&store, devin.as_deref(), Some(&dl), id, None, Some(text))?;
+    // one-shot では ACP を張らず devin -r で送る。権限カードは serve 側で回答する。
+    let message = answer::submit(
+        &store,
+        devin.as_deref(),
+        Some(&dl),
+        None,
+        id,
+        None,
+        Some(text),
+    )?;
     println!("回答を送信しました: {message}");
     Ok(())
 }

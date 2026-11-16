@@ -183,11 +183,27 @@ Cloud API とは別に、ローカルマシンで動く Devin と連携する経
 - TUI がロックを握っているセッションへの注入は不可 → andon が spawn して所有するヘッドレス運用前提
 - 要 `devin auth login`
 
-### `devin acp` — 双方向プロトコル
+### `devin acp` — 双方向プロトコル(実機プローブ済み)
 
-- stdio JSON-RPC。実機でサーバ起動を確認
-- `request_permission` がホストに返るので「スマホで承認」が実現できる(Cloud API にはない機能)
-- ACP host が `authenticate` で資格情報を渡す設計。こちらも CLI 認証が必要
+stdio JSON-RPC 2.0。実機で確認した事実:
+
+- `initialize` は protocolVersion `1`。`agentCapabilities.loadSession: true`、`sessionCapabilities`(list/delete/additionalDirectories)を広告する
+- `session/list` は**無認証で動き**、`_meta.cognition.ai/isLocked` 付きで既存セッションを返す
+- `authenticate` は `params._meta.api_key` に `windsurf_api_key` を渡すと成功する。**`devin auth login` は不要**(ACP host が資格情報の唯一の供給源で、CLI 資格情報は参照しない)
+- `session/new` + `session/prompt` でセッションを作成・実行できる
+- `session/load` はロック中のセッションで `session_locked`(code `-32015`)を返す → Desktop/TUI 保持のセッションは接続不可として扱う
+- `session/request_permission`(agent→client)が権限承認の経路。応答は `{"outcome": {"outcome": "selected", "optionId": ...}}` または `{"outcome": "cancelled"}`
+
+### 実装済み: `adapter/devin_acp`
+
+`serve --source local|both` で credentials.toml の `windsurf_api_key` が読めたとき、長寿命の `devin acp` 子プロセスを 1 本張る。
+
+- reader スレッドが行単位 JSON-RPC を振り分ける: 応答(id のみ)は pending マップ経由で呼び出し元へ、agent→client 要求(id+method)はハンドラへ、通知(method のみ)は破棄
+- `session/request_permission` → `acp-perm:<rpc_id>` fingerprint の判断カード(kind=choice)に変換して挿入し、SSE + ntfy で通知。回答は `respond_permission` で JSON-RPC 応答を返す(自由入力は cancelled 扱い)
+- ローカルカードへの回答は `devin -r` より ACP `session/load`+`session/prompt` を優先し、失敗時のみ `-r` にフォールバック。`session_locked` 等で load できないセッションは従来通り失敗を表面化する
+- `POST /api/sessions` の local 起動は `session/new`+`session/prompt`。acp 子プロセスの PID は `DevinLocal::allow_pid` でロック判定から除外し、自プロセスのロックを `in_terminal` と誤認しないようにする
+- 認証失敗・spawn 失敗時は acp=None で起動し `devin -r` 経路に縮退する
+- **ワンショット CLI(`send --local`・`decide`)では ACP を張らない**: acp プロセスがエージェント実行体のため、プロセス終了でターンが死ぬ
 
 ### 実装済み: `adapter/devin_local`
 
@@ -208,10 +224,10 @@ Cloud API とは別に、ローカルマシンで動く Devin と連携する経
 
 ### ローカル連携の制約
 
-- `devin auth login` が一度必要(Desktop の認証とは別経路)。未ログインでは監視は動くが回答注入とセッション起動が失敗する
-- Desktop/TUI がロックを握っているセッションへの注入は不可 → `in_terminal` 表示のみ
-- ロック解放後(Desktop 終了・プロセス死)の待機セッションは `-r` で再開できるためカード化対象になる
-- ACP adapter は permission 承認カードまで取れる本命だが JSON-RPC クライアント実装が要る(未着手)
+- `devin auth login` が一度必要(Desktop の認証とは別経路)。監視・ACP 経由の注入/起動は credentials.toml の API キーで動くが、`devin -r`/`devin -p` フォールバック経路は未ログインだと失敗する
+- Desktop/TUI がロックを握っているセッションへの注入は不可 → `in_terminal` 表示のみ(ACP の `session/load` も `session_locked` で失敗する)
+- ロック解放後(Desktop 終了・プロセス死)の待機セッションは `-r` または ACP `session/load` で再開できるためカード化対象になる
+- ACP の通知(`session/update`)は現状捨てており、状態変化は sessions.db ポーリングで追う。権限要求は `session/request_permission` 経由で別経路を通る
 - sessions.db のスキーマは非公開インターフェースで、CLI 更新で変わる可能性がある。失敗時はポーリングエラーとして表面化する設計に留め、スキーマ変更への追随はその都度行う
 
 ## セキュリティ設計

@@ -17,20 +17,36 @@ use tokio::sync::broadcast;
 use tokio_stream::StreamExt as _;
 use tokio_stream::wrappers::BroadcastStream;
 
+use crate::adapter::devin_acp::DevinAcp;
 use crate::adapter::devin_cloud::{self, DevinCloud};
 use crate::adapter::devin_local::{self, DevinLocal};
 use crate::notify;
 use crate::store::Store;
-use crate::{Error, Result, answer};
+use crate::{Error, Result, answer, card};
 
 const INDEX_HTML: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/static/index.html"));
 const APP_JS: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/static/app.js"));
+const MANIFEST: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/static/manifest.webmanifest"
+));
+const ICON_192: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/static/icon-192.png"));
+const ICON_512: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/static/icon-512.png"));
+
+/// プロンプトの上限。無制限入力を防ぐ。
+const PROMPT_MAX: usize = 32 * 1024;
 
 pub struct AppState {
     pub store: Arc<Store>,
     /// 起動したソースに応じて Some。cloud 未使用なら None。
     pub devin: Option<Arc<DevinCloud>>,
     pub local: Option<Arc<DevinLocal>>,
+    /// ローカル ACP 接続。credentials がなければ None。
+    pub acp: Option<Arc<DevinAcp>>,
+    /// Cloud セッション作成時に添付する knowledge note(`andon setup` 発行)。
+    pub note_id: Option<String>,
+    /// Cloud セッション作成時の bypass_approval フラグ。
+    pub bypass_approval: bool,
     pub token: Option<String>,
     pub tx: broadcast::Sender<String>,
     pub notify: Option<notify::Target>,
@@ -40,12 +56,30 @@ pub async fn serve(bind: &str, state: Arc<AppState>) -> Result<()> {
     let api = Router::new()
         .route("/state", get(state_handler))
         .route("/decisions/{id}/answer", post(answer_handler))
+        .route("/sessions", post(launch_handler))
         .route("/poll", post(poll_handler))
         .route("/events", get(events_handler))
         .route_layer(middleware::from_fn_with_state(state.clone(), auth));
     let app = Router::new()
         .route("/", get(|| async { Html(INDEX_HTML) }))
         .route("/app.js", get(app_js))
+        .route(
+            "/manifest.webmanifest",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "application/manifest+json")],
+                    MANIFEST,
+                )
+            }),
+        )
+        .route(
+            "/icon-192.png",
+            get(|| async { ([(header::CONTENT_TYPE, "image/png")], ICON_192) }),
+        )
+        .route(
+            "/icon-512.png",
+            get(|| async { ([(header::CONTENT_TYPE, "image/png")], ICON_512) }),
+        )
         .nest("/api", api)
         .with_state(state);
     let listener = tokio::net::TcpListener::bind(bind).await?;
@@ -109,11 +143,13 @@ async fn answer_handler(
     let store = st.store.clone();
     let devin = st.devin.clone();
     let local = st.local.clone();
+    let acp = st.acp.clone();
     let message = tokio::task::spawn_blocking(move || {
         answer::submit(
             &store,
             devin.as_deref(),
             local.as_deref(),
+            acp.as_deref(),
             id,
             req.option_id.as_deref(),
             req.text.as_deref(),
@@ -123,6 +159,79 @@ async fn answer_handler(
     .map_err(|e| ApiError(Error::Io(std::io::Error::other(e.to_string()))))??;
     let _ = st.tx.send("update".to_owned());
     Ok(Json(json!({"message": message})))
+}
+
+#[derive(Deserialize)]
+struct LaunchReq {
+    prompt: String,
+    /// 作業ディレクトリ。省略時はサーバプロセスの cwd。
+    cwd: Option<String>,
+    /// "local"(ACP) | "cloud"。省略時は利用可能な方を選ぶ。
+    source: Option<String>,
+}
+
+/// `POST /api/sessions`。PWA からセッションを起動する。
+/// local は ACP `session/new`+`session/prompt`、cloud は v3 sessions API。
+async fn launch_handler(
+    State(st): State<Arc<AppState>>,
+    Json(req): Json<LaunchReq>,
+) -> std::result::Result<Json<Value>, ApiError> {
+    let prompt = req.prompt.trim().to_owned();
+    if prompt.is_empty() {
+        return Err(ApiError(Error::Local("prompt が空です".to_owned())));
+    }
+    if prompt.len() > PROMPT_MAX {
+        return Err(ApiError(Error::Local("prompt が長すぎます".to_owned())));
+    }
+    let cwd_in = req
+        .cwd
+        .map(|c| c.trim().to_owned())
+        .filter(|c| !c.is_empty());
+    let source = req.source.unwrap_or_else(|| {
+        if st.acp.is_some() {
+            "local".to_owned()
+        } else {
+            "cloud".to_owned()
+        }
+    });
+    let acp = st.acp.clone();
+    let devin = st.devin.clone();
+    let store = st.store.clone();
+    let note_id = st.note_id.clone();
+    let bypass = st.bypass_approval;
+    let result = tokio::task::spawn_blocking(move || match source.as_str() {
+        "local" => {
+            let acp = acp.ok_or_else(|| {
+                Error::Local(
+                    "ACP 未接続(serve --source local/both と credentials が必要)".to_owned(),
+                )
+            })?;
+            let cwd = match &cwd_in {
+                Some(c) => {
+                    let p = std::fs::canonicalize(c)?;
+                    if !p.is_dir() {
+                        return Err(Error::Local(format!("{c} はディレクトリではありません")));
+                    }
+                    p
+                }
+                None => std::env::current_dir()?,
+            };
+            let id = acp.new_session(&cwd.display().to_string())?;
+            store.meta_set(&format!("local_owned:{id}"), "1")?;
+            acp.prompt(&id, None, &format!("{prompt}\n\n{}", card::INSTRUCTION))?;
+            Ok::<_, Error>(json!({"session_id": format!("local:{id}"), "source": "local"}))
+        }
+        "cloud" => {
+            let devin = devin.ok_or(Error::Config("DEVIN_API_KEY"))?;
+            let (id, url) = devin.create_session(&prompt, note_id.as_deref(), bypass)?;
+            Ok(json!({"session_id": id, "url": url, "source": "cloud"}))
+        }
+        _ => Err(Error::Local(format!("不明な source: {source}"))),
+    })
+    .await
+    .map_err(|e| ApiError(Error::Io(std::io::Error::other(e.to_string()))))??;
+    let _ = st.tx.send("update".to_owned());
+    Ok(Json(result))
 }
 
 /// 手動ポーリング(検証・デバッグ用)。起動中の全ソースを 1 回ずつ回す。

@@ -20,11 +20,10 @@ andon setup
 ### ローカル Devin(CLI/Desktop)
 
 ```sh
-devin auth login                  # 回答注入・セッション起動に必要
 andon serve --source local
 ```
 
-API キー不要。`~/.local/share/devin/cli/sessions.db` を監視し、`devin -r` で回答を注入する。`--source both` で Cloud と併用もできる。
+API キー不要。`~/.local/share/devin/cli/sessions.db` を監視し、回答注入・セッション起動・権限承認は `devin acp`(stdio JSON-RPC)経由で行う。認証は credentials.toml の API キーを自動で読むため `devin auth login` は不要(ACP 不可時の `devin -r` フォールバックでは必要)。`--source both` で Cloud と併用もできる。
 
 ## 使い方
 
@@ -41,7 +40,7 @@ andon send "containers リポジトリの builder を調査して報告して"
 andon send --local --cwd ~/Projects/containers "builder を調査して報告して"
 ```
 
-セッションが人間の入力待ちになるとカードが作成され(ntfy 設定時は push 通知)、選択肢をタップすると回答がセッションへ返る。
+セッションが人間の入力待ちになるとカードが作成され(ntfy 設定時は push 通知)、選択肢をタップすると回答がセッションへ返る。PWA の「+ 新規」ボタンからもセッションを起動できる(ACP 経由・auth login 不要)。ACP 接続中は Devin の権限要求(許可/拒否)もカードとして届く。
 
 ## コマンド
 
@@ -72,10 +71,11 @@ andon send --local --cwd ~/Projects/containers "builder を調査して報告し
 | `ANDON_KNOWLEDGE_NOTE_ID` | | note ID の上書き(通常は `setup` が DB に保存) |
 | `ANDON_DEVIN_BIN` | | `devin` 実行ファイル(既定 `devin`) |
 | `ANDON_DEVIN_HOME` | | Devin CLI データdir(既定 `~/.local/share/devin/cli`) |
+| `ANDON_DEVIN_CREDENTIALS` | | credentials.toml(ACP 認証用。既定 `~/.local/share/devin/credentials.toml`) |
 | `ANDON_LOCAL_DAYS` | | ローカル一覧の対象期間・日(既定 30) |
 | `DEVIN_API_BASE` | | API ベース URL(既定 `https://api.devin.ai`) |
 
-ローカルモードの注意: Desktop/TUI がロックを握っているセッションは一覧のみ(注入不可)で `in_terminal` と表示される。`send --local` や回答が通ったセッションのみがカード化対象になる。
+ローカルモードの注意: Desktop/TUI がロックを握っているセッションは一覧のみ(注入不可)で `in_terminal` と表示される。andon 起動・回答が通ったセッションのみがカード化対象になる。PWA は manifest 対応で「ホーム画面に追加」から standalone で開ける。
 
 ## ドキュメント
 

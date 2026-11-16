@@ -138,6 +138,33 @@
     sessions.forEach((s) => ss.append(sessionRow(s)));
   }
 
+  const launchEl = document.getElementById("launch");
+  document.getElementById("newbtn").onclick = () => launchEl.classList.toggle("open");
+  document.getElementById("lgo").onclick = async () => {
+    const btn = document.getElementById("lgo");
+    const msg = document.getElementById("launchmsg");
+    const prompt = document.getElementById("lprompt").value.trim();
+    if (!prompt) return;
+    btn.disabled = true;
+    msg.textContent = "起動中…";
+    try {
+      const r = await api("/api/sessions", {
+        method: "POST",
+        body: JSON.stringify({
+          prompt,
+          cwd: document.getElementById("lcwd").value.trim() || null,
+          source: document.getElementById("lsource").value || null,
+        }),
+      });
+      msg.textContent = `起動しました: ${r.session_id}`;
+      document.getElementById("lprompt").value = "";
+      await load();
+    } catch (e) {
+      msg.textContent = `起動失敗: ${e.message}`;
+    }
+    btn.disabled = false;
+  };
+
   try {
     const es = new EventSource(`/api/events?token=${encodeURIComponent(token)}`);
     es.onmessage = () => load().catch(() => {});

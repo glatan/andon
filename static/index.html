@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#15181d">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon-192.png" sizes="192x192" type="image/png">
+<link rel="apple-touch-icon" href="/icon-192.png">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'">
 <title>andon</title>
 <style>
@@ -38,11 +41,33 @@
   .srow .stitle { flex: 1; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .srow .sst { font-size: 12px; color: #8b93a1; }
   #empty { color: #566070; font-size: 13px; padding: 20px 2px; }
+  #newbtn { margin-left: auto; padding: 6px 14px; font-size: 13px; border-radius: 8px; border: 1px solid #3a4150; background: #262c37; color: #e6e9ee; cursor: pointer; }
+  #launch { display: none; }
+  #launch.open { display: block; }
+  #launch textarea, #launch input { width: 100%; padding: 10px; font-size: 14px; border-radius: 8px; border: 1px solid #3a4150; background: #11141a; color: #e6e9ee; margin-bottom: 8px; font-family: inherit; }
+  #launch textarea { min-height: 80px; resize: vertical; }
+  #launch .row { display: flex; gap: 8px; }
+  #launch select { flex: none; padding: 10px; font-size: 14px; border-radius: 8px; border: 1px solid #3a4150; background: #11141a; color: #e6e9ee; }
+  #launch button { flex: 1; padding: 10px; font-size: 14px; border-radius: 8px; border: 1px solid #3a4150; background: #2e3a4d; color: #e6e9ee; cursor: pointer; }
+  #launchmsg { font-size: 12px; color: #6fbf73; margin-top: 6px; }
 </style>
 </head>
 <body>
-<header><h1>andon</h1><span id="badge"></span></header>
+<header><h1>andon</h1><span id="badge"></span><button id="newbtn">+ 新規</button></header>
 <main>
+  <section id="launch" class="card">
+    <textarea id="lprompt" placeholder="タスクを書く(例: README の誤記を直して)"></textarea>
+    <input id="lcwd" placeholder="作業ディレクトリ(省略可)">
+    <div class="row">
+      <select id="lsource">
+        <option value="">自動</option>
+        <option value="local">ローカル</option>
+        <option value="cloud">Cloud</option>
+      </select>
+      <button id="lgo">起動</button>
+    </div>
+    <div id="launchmsg"></div>
+  </section>
   <section id="decisions"></section>
   <h2>sessions</h2>
   <section id="sessions"></section>

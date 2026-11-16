@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rusqlite::{Connection, OptionalExtension, params};
@@ -29,6 +29,8 @@ pub struct DevinLocal {
     locks_dir: PathBuf,
     /// 一覧対象とする最終活動からの秒数。
     window_secs: i64,
+    /// andon 自身の子プロセス PID。ロック保持判定から除外する。
+    own_pids: Mutex<std::collections::HashSet<u32>>,
 }
 
 #[derive(Debug)]
@@ -81,7 +83,29 @@ impl DevinLocal {
             db_path: cfg.devin_home.join("sessions.db"),
             locks_dir: cfg.devin_home.join("session_locks"),
             window_secs: cfg.local_days.max(1) as i64 * 86_400,
+            own_pids: Mutex::new(std::collections::HashSet::new()),
         }
+    }
+
+    /// andon が起動した子プロセス(devin acp 等)の PID を登録する。
+    /// これらが握るロックは「端末保持」とみなさずカード化を妨げない。
+    pub fn allow_pid(&self, pid: u32) {
+        self.own_pids.lock().unwrap().insert(pid);
+    }
+
+    /// sessions.db からセッションの working_directory を返す。
+    pub fn session_cwd(&self, id: &str) -> Result<Option<String>> {
+        if !valid_id(id) {
+            return Ok(None);
+        }
+        let conn = self.connect()?;
+        conn.query_row(
+            "SELECT working_directory FROM sessions WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(Into::into)
     }
 
     /// `devin -r <id> -p <msg>` で既存セッションへメッセージを注入する。
@@ -210,7 +234,13 @@ impl DevinLocal {
         let Ok(body) = std::fs::read_to_string(self.locks_dir.join(format!("{id}.lock"))) else {
             return false;
         };
-        pid_alive(body.trim())
+        let Ok(pid) = body.trim().parse::<u32>() else {
+            return false;
+        };
+        if self.own_pids.lock().unwrap().contains(&pid) {
+            return false;
+        }
+        pid_alive(pid)
     }
 
     /// 1 セッション分の状態を推定する。
@@ -343,10 +373,7 @@ fn valid_id(id: &str) -> bool {
 }
 
 /// PID の生存確認。/proc を優先し、なければ kill -0 にフォールバック。
-fn pid_alive(pid_s: &str) -> bool {
-    let Ok(pid) = pid_s.parse::<u32>() else {
-        return false;
-    };
+fn pid_alive(pid: u32) -> bool {
     if Path::new(&format!("/proc/{pid}")).exists() {
         return true;
     }
@@ -605,7 +632,7 @@ mod tests {
 
     #[test]
     fn pid_alive_accepts_running_process() {
-        assert!(pid_alive(&std::process::id().to_string()));
-        assert!(!pid_alive("not-a-pid"));
+        assert!(pid_alive(std::process::id()));
+        assert!(!pid_alive(u32::MAX));
     }
 }

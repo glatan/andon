@@ -232,6 +232,7 @@ fn row_to_decision(r: &rusqlite::Row<'_>) -> rusqlite::Result<Decision> {
         diagram: diagram.and_then(|d| serde_json::from_str(&d).ok()),
         options: serde_json::from_str(&options).unwrap_or_default(),
         answer: r.get("answer")?,
+        fingerprint: r.get("fingerprint")?,
         created_at: r.get("created_at")?,
         answered_at: r.get("answered_at")?,
     })

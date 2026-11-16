@@ -25,6 +25,8 @@ pub struct Config {
     pub devin_bin: PathBuf,
     /// Devin CLI のデータディレクトリ(sessions.db・session_locks の親)。
     pub devin_home: PathBuf,
+    /// Devin の credentials.toml。ACP 認証に windsurf_api_key を読む。
+    pub devin_credentials: PathBuf,
     /// ローカルセッション一覧に含める最終活動からの日数。
     pub local_days: u64,
 }
@@ -57,6 +59,7 @@ impl Config {
                 },
                 PathBuf::from,
             ),
+            devin_credentials: devin_credentials(),
             local_days: env_opt("ANDON_LOCAL_DAYS")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(30),
@@ -66,4 +69,22 @@ impl Config {
 
 fn env_opt(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|v| !v.is_empty())
+}
+
+/// credentials.toml の場所。既定は devin_home の親/devin/credentials.toml。
+fn devin_credentials() -> PathBuf {
+    if let Some(p) = env_opt("ANDON_DEVIN_CREDENTIALS") {
+        return PathBuf::from(p);
+    }
+    let home = env_opt("ANDON_DEVIN_HOME").map_or_else(
+        || {
+            std::env::home_dir()
+                .unwrap_or_default()
+                .join(".local/share/devin/cli")
+        },
+        PathBuf::from,
+    );
+    home.parent()
+        .map(|p| p.join("credentials.toml"))
+        .unwrap_or_else(|| home.join("credentials.toml"))
 }

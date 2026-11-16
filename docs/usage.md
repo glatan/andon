@@ -56,7 +56,7 @@ flowchart TD
 4. `andon setup` を実行する。カード規約(ANDON_JSON)を教える knowledge note が組織に作成され、ID がローカル DB に保存される。以後 `andon send` で作るセッションに自動添付される。
 5. `andon serve` で起動する。既定では `127.0.0.1:8787` で待つ。
 
-スマホから見る場合は、常時稼働マシンを Tailscale 等で到達可能にしておく(`ANDON_BIND=0.0.0.0:8787` + `ANDON_TOKEN` 必須、または tailscale アドレスにバインド)。
+スマホから見る場合は、常時稼働マシンを Tailscale 等で到達可能にしておく(`ANDON_BIND=0.0.0.0:8787` + `ANDON_TOKEN` 必須、または tailscale アドレスにバインド)。ブラウザの「ホーム画面に追加」でアイコンから standalone 表示で開ける(manifest 配信済み)。
 
 ## 日常の使い方
 
@@ -158,7 +158,7 @@ ntfy.sh の場合、同じトピック名をスマホの ntfy アプリで Subsc
 
 ## ローカル Devin(CLI/Desktop)を使う
 
-Devin Cloud ではなく、ローカルマシンで動く Devin CLI/Desktop のセッションも監視できる。API キーは不要で、`~/.local/share/devin/cli/sessions.db` を直接読んで状態を推定し、回答は `devin -r` で注入する。
+Devin Cloud ではなく、ローカルマシンで動く Devin CLI/Desktop のセッションも監視できる。API キーは不要で、`~/.local/share/devin/cli/sessions.db` を直接読んで状態を推定する。回答の注入とセッション起動は `devin acp`(stdio JSON-RPC)経由で行い、credentials.toml の `windsurf_api_key` で認証するため **`devin auth login` は不要**である。ACP が使えない環境では `devin -r` にフォールバックする(こちらは CLI 側のログインが必要)。
 
 ```mermaid
 flowchart LR
@@ -166,23 +166,30 @@ flowchart LR
         D[Devin CLI/Desktop] -->|書き込み| DB[(sessions.db)]
         DB -->|読み取り専用| P[andon poller]
         P --> SRV[server + PWA]
-        SRV -->|"devin -r id -p 回答"| D
+        SRV -->|"devin acp(JSON-RPC)"| ACP[session/load + prompt]
+        ACP --> D
     end
     PH[スマホのブラウザ] <-->|SSE / REST| SRV
 ```
 
 ### セットアップ
 
-1. `devin auth login` を一度実行する。監視だけなら不要だが、回答の注入と `send --local` によるセッション起動には CLI 側の認証が必要である(Desktop のログインとは別経路)。
-2. `andon serve --source local` で起動する。`--source both` にすると Cloud API と同時に監視する。
+1. `andon serve --source local` で起動する。`--source both` にすると Cloud API と同時に監視する。起動時に `devin acp` への接続を試み、`[andon] devin acp 接続成功` と出れば注入・起動・権限カードがすべて使える。
+2. `devin auth login` は ACP 経路では不要だが、`devin -r` フォールバックと `send --local`(CLI の `devin -p` 経路)では必要になる。
 
 ### セッションを作る
+
+PWA の「+ 新規」ボタンから作るのが手軽である(POST /api/sessions)。タスクと作業ディレクトリを入れて「起動」を押すと、ACP の `session/new`+`session/prompt` で即座に起動する。CLI からは:
 
 ```sh
 andon send --local --cwd ~/Projects/containers "builder を調査して報告して"
 ```
 
-指定した cwd で `devin -p` をバックグラウンド起動する。ANDON_JSON 規約はプロンプトに自動で添えられる。ターンが終わると `devin` プロセスは終了し、andon が「入力待ち」を検出してカードを作る。
+こちらは `devin -p` をバックグラウンド起動するため `devin auth login` が必要である。どちらの経路でも ANDON_JSON 規約はプロンプトに自動で添えられる。ターンが終わると andon が「入力待ち」を検出してカードを作る。
+
+### 権限要求カード
+
+ACP 接続中は、エージェントがツール実行の許可を求める `session/request_permission` が「権限要求: …」のカードとして届く。選択肢は Devin 側が提示したもの(許可・拒否等)がそのまま並び、タップすると ACP 応答が返って実行が進む。自由入力で送った場合はキャンセル扱いになる。
 
 ### 状態の読みかた(ローカル)
 
@@ -207,9 +214,10 @@ Desktop/TUI で開いたままのセッションはロックが残っている�
 
 ### 注意
 
-- `devin -r` はターンが終わるまでプロセスが残る。回答の送信は「起動を確認できた」時点で完了扱いになる
+- `devin -r` はターンが終わるまでプロセスが残る。回答の送信は「起動を確認できた」時点で完了扱いになる。ACP 経路ではこの待ちは発生しない
+- `andon serve` 中は andon 自身の `devin acp` プロセスがセッションのロックを握るが、`in_terminal` とは表示されない(自プロセスは判定から除外)。一方 `andon sessions --local` は別プロセスのため、serve 中のセッションは `in_terminal` に見える
 - sessions.db のスキーマは非公開の内部構造であり、CLI 更新で変わる可能性がある
-- `ANDON_DEVIN_HOME` でデータディレクトリ、`ANDON_DEVIN_BIN` で実行ファイルの場所を変えられる
+- `ANDON_DEVIN_HOME` でデータディレクトリ、`ANDON_DEVIN_BIN` で実行ファイルの場所、`ANDON_DEVIN_CREDENTIALS` で credentials.toml の場所を変えられる
 
 ## トラブルシューティング
 

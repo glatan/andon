@@ -66,6 +66,8 @@ pub struct Decision {
     pub diagram: Option<CardDiagram>,
     pub options: Vec<CardOption>,
     pub answer: Option<String>,
+    /// 重複防止指紋。`acp-perm:` 始まりは ACP 権限要求に対応する。
+    pub fingerprint: String,
     pub created_at: i64,
     pub answered_at: Option<i64>,
 }
