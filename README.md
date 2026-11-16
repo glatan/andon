@@ -57,4 +57,5 @@ andon send "containers リポジトリの builder を調査して報告して"
 
 ## ドキュメント
 
+- [docs/usage.md](docs/usage.md) — 利用ガイド(セットアップ・使い方・図解)
 - [docs/design.md](docs/design.md) — 設計・Devin API v3 調査結果・MVP 範囲
