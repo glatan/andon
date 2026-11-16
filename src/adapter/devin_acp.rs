@@ -158,10 +158,16 @@ impl DevinAcp {
             self.pending.lock().unwrap().remove(&id);
             return Err(e);
         }
-        let v = rx.recv_timeout(Duration::from_secs(60)).map_err(|_| {
-            self.pending.lock().unwrap().remove(&id);
-            Error::Local(format!("acp {method} がタイムアウト"))
-        })?;
+        let v = match rx.recv_timeout(Duration::from_secs(60)) {
+            Ok(v) => v,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(Error::Local("acp との接続が切れました".to_owned()));
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                self.pending.lock().unwrap().remove(&id);
+                return Err(Error::Local(format!("acp {method} がタイムアウト")));
+            }
+        };
         if let Some(err) = v.get("error").filter(|e| !e.is_null()) {
             let msg = err["message"].as_str().unwrap_or("unknown");
             let msg: String = msg.chars().take(300).collect();
@@ -270,10 +276,19 @@ fn reader(
                 }
             }
             Msg::AgentRequest => agent_request(&acp, &m, &store, &tx, notify.as_ref()),
-            // 通知(method のみ)は現時点では捨てる。状態変化は sessions.db で追う。
-            Msg::Notification => {}
+            // 通知は状態追跡には使わないが、session/update は UI 即時更新の
+            // トリガに使う(DB 本体はポーラーが追う)。
+            Msg::Notification => {
+                if m["method"].as_str() == Some("session/update") {
+                    let _ = tx.send("update".to_owned());
+                }
+            }
         }
     }
+    // 切断: 待機中の呼び出しを即時失敗させ、回答不能になった権限カードを掃除する。
+    acp.pending.lock().unwrap().clear();
+    acp.perms.lock().unwrap().clear();
+    let _ = store.expire_fingerprint_prefix(FINGERPRINT_PERM);
     let _ = tx.send("update".to_owned());
 }
 
@@ -440,5 +455,93 @@ mod tests {
     #[test]
     fn permission_card_rejects_missing_session() {
         assert!(permission_card(&json!({"options": []}), "acp-perm:1").is_none());
+    }
+
+    /// フェイク agent(sh スクリプト)との実往復:
+    /// initialize→authenticate→request_permission→カード化→respond_permission。
+    /// sh が無い環境ではスキップする。
+    #[test]
+    fn end_to_end_permission_roundtrip() {
+        use std::io::Write as _;
+        if !Path::new("/bin/sh").exists() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("andon-fake-acp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("fake-agent.sh");
+        let inbox = dir.join("inbox.log");
+        // 受信行を inbox に記録し、固定 id で応答を返す疑似エージェント。
+        // authenticate 直後に request_permission(id=99)を発行する。
+        let body = format!(
+            r#"#!/bin/sh
+LOG='{inbox}'
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$LOG"
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":1}}}}' ;;
+    *'"method":"authenticate"'*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{}}}}'
+      printf '%s\n' '{{"jsonrpc":"2.0","id":99,"method":"session/request_permission","params":{{"sessionId":"fake-1","toolCall":{{"title":"exec test"}},"options":[{{"optionId":"allow","name":"許可"}},{{"optionId":"deny","name":"拒否"}}]}}}}' ;;
+    *'"method":"session/new"'*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":3,"result":{{"sessionId":"fake-1"}}}}' ;;
+  esac
+done
+"#,
+            inbox = inbox.display()
+        );
+        std::fs::File::create(&script)
+            .unwrap()
+            .write_all(body.as_bytes())
+            .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let store = Arc::new(Store::open(Path::new(":memory:")).unwrap());
+        let (tx, _rx) = broadcast::channel(4);
+        let acp = DevinAcp::connect(&script, "key", store.clone(), tx, None).unwrap();
+
+        // 権限要求がカードになるまで待つ。
+        let fp = format!("{FINGERPRINT_PERM}99");
+        let mut card = None;
+        for _ in 0..50 {
+            if let Some(d) = store
+                .decisions()
+                .unwrap()
+                .into_iter()
+                .find(|d| d.fingerprint == fp)
+            {
+                card = Some(d);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let card = card.expect("権限要求カードが作られなかった");
+        assert_eq!(card.session_id, "local:fake-1");
+        assert_eq!(card.options.len(), 2);
+
+        acp.respond_permission(&fp, Some("allow")).unwrap();
+
+        // agent 側が受け取った応答を inbox から確認する。
+        let mut seen = String::new();
+        for _ in 0..50 {
+            if let Ok(s) = std::fs::read_to_string(&inbox)
+                && s.contains("\"id\":99")
+                && s.contains("optionId")
+            {
+                seen = s;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(
+            seen.contains(r#""id":99"#)
+                && seen.contains(r#""outcome":"selected""#)
+                && seen.contains(r#""optionId":"allow""#),
+            "応答が agent に届いていない: {seen}"
+        );
     }
 }
