@@ -118,13 +118,37 @@ impl Store {
     }
 
     /// セッションの未決カードをすべて expired にする(待ち状態を抜けたとき)。
-    pub fn expire_pending_for(&self, session_id: &str) -> Result<()> {
-        self.conn.lock().unwrap().execute(
-            "UPDATE decisions SET state = 'expired'
-             WHERE session_id = ?1 AND state = 'pending'",
-            params![session_id],
-        )?;
+    /// `except_prefix` があると、その接頭辞の指紋を持つカードは残す
+    /// (ACP 権限要求のように sessions.db 待機推定の外側で管理するカード用)。
+    /// 接頭辞に LIKE ワイルドカード(%, _)を含めないこと。
+    pub fn expire_pending_for(&self, session_id: &str, except_prefix: Option<&str>) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        match except_prefix {
+            Some(p) => conn.execute(
+                "UPDATE decisions SET state = 'expired'
+                 WHERE session_id = ?1 AND state = 'pending'
+                   AND fingerprint NOT LIKE ?2 || '%'",
+                params![session_id, p],
+            )?,
+            None => conn.execute(
+                "UPDATE decisions SET state = 'expired'
+                 WHERE session_id = ?1 AND state = 'pending'",
+                params![session_id],
+            )?,
+        };
         Ok(())
+    }
+
+    /// 指紋接頭辞が一致する未決カードをすべて expired にする。
+    /// ACP 再起動時に、死んだプロセスの権限要求カードを掃除する用途。
+    /// 返り値は expired にした件数。
+    pub fn expire_fingerprint_prefix(&self, prefix: &str) -> Result<usize> {
+        let n = self.conn.lock().unwrap().execute(
+            "UPDATE decisions SET state = 'expired'
+             WHERE state = 'pending' AND fingerprint LIKE ?1 || '%'",
+            params![prefix],
+        )?;
+        Ok(n)
     }
 
     pub fn insert_decision(&self, d: &NewDecision, now: i64) -> Result<i64> {
@@ -244,4 +268,78 @@ pub fn now() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mem() -> Store {
+        Store::open(Path::new(":memory:")).unwrap()
+    }
+
+    fn nd(fingerprint: &str) -> NewDecision {
+        NewDecision {
+            session_id: "local:x".to_owned(),
+            session_title: None,
+            session_url: "local:x".to_owned(),
+            kind: DecisionKind::Choice,
+            title: "t".to_owned(),
+            body: "b".to_owned(),
+            summary: None,
+            diagram: None,
+            options: vec![],
+            fingerprint: fingerprint.to_owned(),
+        }
+    }
+
+    /// ACP 権限要求カードは待機推定の外で管理するため、
+    /// expire から除外されなければならない(ポーラーに消されない)。
+    #[test]
+    fn expire_pending_for_keeps_except_prefix() {
+        let s = mem();
+        s.insert_decision(&nd("acp-perm:1"), now()).unwrap();
+        s.insert_decision(&nd("msg:2"), now()).unwrap();
+        s.expire_pending_for("local:x", Some("acp-perm:")).unwrap();
+        let ds = s.decisions().unwrap();
+        assert_eq!(
+            ds.iter()
+                .find(|d| d.fingerprint == "acp-perm:1")
+                .unwrap()
+                .state,
+            DecisionState::Pending
+        );
+        assert_eq!(
+            ds.iter().find(|d| d.fingerprint == "msg:2").unwrap().state,
+            DecisionState::Expired
+        );
+    }
+
+    #[test]
+    fn expire_pending_for_without_prefix_expires_all() {
+        let s = mem();
+        s.insert_decision(&nd("acp-perm:1"), now()).unwrap();
+        s.expire_pending_for("local:x", None).unwrap();
+        assert_eq!(s.decisions().unwrap()[0].state, DecisionState::Expired);
+    }
+
+    #[test]
+    fn expire_fingerprint_prefix_sweeps_only_matching() {
+        let s = mem();
+        s.insert_decision(&nd("acp-perm:1"), now()).unwrap();
+        s.insert_decision(&nd("msg:2"), now()).unwrap();
+        assert_eq!(s.expire_fingerprint_prefix("acp-perm:").unwrap(), 1);
+        let ds = s.decisions().unwrap();
+        assert_eq!(
+            ds.iter()
+                .find(|d| d.fingerprint == "acp-perm:1")
+                .unwrap()
+                .state,
+            DecisionState::Expired
+        );
+        assert_eq!(
+            ds.iter().find(|d| d.fingerprint == "msg:2").unwrap().state,
+            DecisionState::Pending
+        );
+    }
 }

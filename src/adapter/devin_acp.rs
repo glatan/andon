@@ -27,7 +27,9 @@ pub const FINGERPRINT_PERM: &str = "acp-perm:";
 type Resp = mpsc::Sender<Value>;
 
 struct PermWait {
-    rpc_id: u64,
+    /// agent→client 要求の id。JSON-RPC では型不問なので Value で保持し、
+    /// 応答時にそのまま送り返す。
+    rpc_id: Value,
 }
 
 /// `devin acp` への接続。reader スレッドが応答・通知・権限要求を振り分ける。
@@ -58,7 +60,7 @@ impl DevinAcp {
             .arg("acp")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()?;
         let stdin = child
             .stdin
@@ -68,6 +70,17 @@ impl DevinAcp {
             .stdout
             .take()
             .ok_or_else(|| Error::Local("acp stdout の取得に失敗".to_owned()))?;
+        // 子の診断出力は破棄せず stderr へ転送する(migration 警告等の切り分け用)。
+        if let Some(stderr) = child.stderr.take() {
+            std::thread::spawn(move || {
+                for line in BufReader::new(stderr).lines() {
+                    match line {
+                        Ok(l) => eprintln!("[devin-acp] {l}"),
+                        Err(_) => break,
+                    }
+                }
+            });
+        }
         let pid = child.id();
         let acp = Arc::new(Self {
             stdin: Mutex::new(stdin),
@@ -79,27 +92,48 @@ impl DevinAcp {
             pid,
         });
         {
-            let acp = acp.clone();
+            let (acp, store) = (acp.clone(), store.clone());
             std::thread::spawn(move || {
                 reader(acp, BufReader::new(stdout), store, tx, notify);
             });
         }
-        acp.request(
+        // fs capability は宣言しない: fs/read_text_file 等の agent→client
+        // 要求を実装していないため、true だと agent を待ち状態にする。
+        let init = acp.request(
             "initialize",
             json!({
                 "protocolVersion": 1,
                 "clientCapabilities": {
-                    "fs": {"readTextFile": true, "writeTextFile": false},
+                    "fs": {"readTextFile": false, "writeTextFile": false},
                     "terminal": false
                 },
                 "clientInfo": {"name": "andon", "version": env!("CARGO_PKG_VERSION")}
             }),
-        )?;
-        acp.request(
+        );
+        if let Err(e) = init {
+            acp.kill_child();
+            return Err(e);
+        }
+        let auth = acp.request(
             "authenticate",
             json!({"methodId": "devin-browser", "_meta": {"api_key": api_key}}),
-        )?;
+        );
+        if let Err(e) = auth {
+            acp.kill_child();
+            return Err(e);
+        }
+        // 前回接続の権限要求カードが残っていれば expired にする。
+        // 死んだプロセスの rpc_id と新プロセスの若い rpc_id が衝突し得るため。
+        let _ = store.expire_fingerprint_prefix(FINGERPRINT_PERM);
         Ok(acp)
+    }
+
+    /// 子プロセスを終了させる。connect 失敗時と Drop で共用。
+    fn kill_child(&self) {
+        if let Some(mut c) = self.child.lock().unwrap().take() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
     }
 
     /// acp 子プロセスの PID(ロック判定の除外用)。
@@ -124,11 +158,14 @@ impl DevinAcp {
             self.pending.lock().unwrap().remove(&id);
             return Err(e);
         }
-        let v = rx
-            .recv_timeout(Duration::from_secs(60))
-            .map_err(|_| Error::Local(format!("acp {method} がタイムアウト")))?;
-        if let Some(err) = v.get("error") {
-            return Err(Error::Local(format!("acp {method}: {}", err["message"])));
+        let v = rx.recv_timeout(Duration::from_secs(60)).map_err(|_| {
+            self.pending.lock().unwrap().remove(&id);
+            Error::Local(format!("acp {method} がタイムアウト"))
+        })?;
+        if let Some(err) = v.get("error").filter(|e| !e.is_null()) {
+            let msg = err["message"].as_str().unwrap_or("unknown");
+            let msg: String = msg.chars().take(300).collect();
+            return Err(Error::Local(format!("acp {method}: {msg}")));
         }
         Ok(v["result"].clone())
     }
@@ -146,16 +183,23 @@ impl DevinAcp {
     }
 
     /// `session/load` で既存セッションに接続する。ロック中はエラーになる。
+    /// 二重 load を防ぐため loaded ロックを request 中も保持する(呼び出し頻度は低い)。
     fn load_session(&self, session_id: &str, cwd: &str) -> Result<()> {
-        if self.loaded.lock().unwrap().contains(session_id) {
+        let mut loaded = self.loaded.lock().unwrap();
+        if loaded.contains(session_id) {
             return Ok(());
         }
         self.request(
             "session/load",
             json!({"sessionId": session_id, "cwd": cwd, "mcpServers": []}),
         )?;
-        self.loaded.lock().unwrap().insert(session_id.to_owned());
+        loaded.insert(session_id.to_owned());
         Ok(())
+    }
+
+    /// この接続で new/load 済みのセッションか。
+    pub fn is_loaded(&self, session_id: &str) -> bool {
+        self.loaded.lock().unwrap().contains(session_id)
     }
 
     /// `session/prompt` を送信する。応答はターン終了時に届くため
@@ -176,7 +220,7 @@ impl DevinAcp {
     /// `option_id` は要求が提示した optionId、`None` ならキャンセル扱い。
     pub fn respond_permission(&self, fingerprint: &str, option_id: Option<&str>) -> Result<()> {
         let Some(w) = self.perms.lock().unwrap().remove(fingerprint) else {
-            return Err(Error::Local(format!(
+            return Err(Error::BadRequest(format!(
                 "権限要求が見つかりません: {fingerprint}"
             )));
         };
@@ -197,10 +241,7 @@ impl DevinAcp {
 
 impl Drop for DevinAcp {
     fn drop(&mut self) {
-        if let Some(mut c) = self.child.lock().unwrap().take() {
-            let _ = c.kill();
-            let _ = c.wait();
-        }
+        self.kill_child();
     }
 }
 
@@ -291,6 +332,7 @@ fn permission_card(params: &Value, fingerprint: &str) -> Option<NewDecision> {
 }
 
 /// agent→client の要求。`session/request_permission` を判断カードに変換する。
+/// それ以外の要求は method not found を返して agent を待ち状態にしない。
 fn agent_request(
     acp: &DevinAcp,
     m: &Value,
@@ -298,31 +340,54 @@ fn agent_request(
     tx: &broadcast::Sender<String>,
     notify: Option<&notify::Target>,
 ) {
+    let rpc_id = m["id"].clone();
     if m["method"].as_str() != Some("session/request_permission") {
-        // 未知の agent→client 要求は応答不能なので放置(タイムアウトに委ねる)。
+        let _ = acp.send(&json!({
+            "jsonrpc": "2.0",
+            "id": rpc_id,
+            "error": {"code": -32601, "message": "method not found"}
+        }));
         return;
     }
-    let Some(rpc_id) = m["id"].as_u64() else {
-        return;
-    };
-    let fp = format!("{FINGERPRINT_PERM}{rpc_id}");
+    let fp = format!(
+        "{FINGERPRINT_PERM}{}",
+        serde_json::to_string(&rpc_id).unwrap_or_default()
+    );
     let Some(card) = permission_card(&m["params"], &fp) else {
+        eprintln!("[andon] 権限要求の変換に失敗(id={rpc_id})");
         return;
     };
-    if store
-        .has_pending_decision(&card.session_id, &fp)
-        .unwrap_or(true)
-    {
-        return;
+    // store エラー時は agent をブロックしたままにしないよう cancelled を返す。
+    let fail = |acp: &DevinAcp, rpc_id: &Value, why: &dyn std::fmt::Display| {
+        eprintln!("[andon] 権限要求の処理に失敗: {why}");
+        let _ = acp.send(&json!({
+            "jsonrpc": "2.0",
+            "id": rpc_id,
+            "result": {"outcome": {"outcome": "cancelled"}}
+        }));
+    };
+    match store.has_pending_decision(&card.session_id, &fp) {
+        Ok(true) => return,
+        Err(e) => return fail(acp, &rpc_id, &e),
+        Ok(false) => {}
     }
     let title = card.title.clone();
-    let Ok(id) = store.insert_decision(&card, now()) else {
-        return;
-    };
-    acp.perms.lock().unwrap().insert(fp, PermWait { rpc_id });
+    acp.perms.lock().unwrap().insert(
+        fp.clone(),
+        PermWait {
+            rpc_id: rpc_id.clone(),
+        },
+    );
+    if let Err(e) = store.insert_decision(&card, now()) {
+        acp.perms.lock().unwrap().remove(&fp);
+        return fail(acp, &rpc_id, &e);
+    }
     let _ = tx.send("update".to_owned());
-    if let Some(n) = notify {
-        let _ = n.send(&title, &format!("カード #{id}"), "");
+    if let Some(n) = notify.cloned() {
+        // ntfy 送信はブロッキング HTTP。reader を止めないよう別スレッドで送る。
+        std::thread::spawn(move || {
+            let _ = n.send(&title, "権限要求カード", "");
+        });
     }
 }
 

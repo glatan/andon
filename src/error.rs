@@ -18,6 +18,8 @@ pub enum Error {
     NotFound(i64),
     #[error("decision は回答済みです: {0}")]
     AlreadyAnswered(i64),
+    #[error("不正なリクエスト: {0}")]
+    BadRequest(String),
     #[error("ローカル Devin: {0}")]
     Local(String),
 }

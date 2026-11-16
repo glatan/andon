@@ -8,6 +8,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::broadcast;
 
+use crate::adapter::devin_acp;
 use crate::config::Config;
 use crate::store::{NewDecision, Store, now};
 use crate::types::{DecisionKind, Session};
@@ -256,7 +257,7 @@ pub fn poll_once(
         match s.status_detail.as_deref() {
             Some("waiting_for_user") => card_for_user_wait(devin, store, s, notify_cfg)?,
             Some("waiting_for_approval") => card_for_approval(store, s, notify_cfg)?,
-            _ => store.expire_pending_for(&s.session_id)?,
+            _ => store.expire_pending_for(&s.session_id, Some(devin_acp::FINGERPRINT_PERM))?,
         }
     }
     let _ = tx.send("update".to_owned());

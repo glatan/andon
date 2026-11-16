@@ -26,13 +26,20 @@ pub fn submit(
         return Err(Error::AlreadyAnswered(id));
     }
     let option = option_id.and_then(|oid| d.options.iter().find(|o| o.id == oid));
+    if let (Some(oid), None) = (option_id, &option) {
+        return Err(Error::BadRequest(format!(
+            "option_id がカードの選択肢と一致しません: {oid}"
+        )));
+    }
     let text = text.filter(|t| !t.is_empty());
     if d.fingerprint.starts_with(FINGERPRINT_PERM) {
         let acp =
             acp.ok_or_else(|| Error::Local("ACP 未接続のため権限要求に回答できません".to_owned()))?;
         acp.respond_permission(&d.fingerprint, option.map(|o| o.id.as_str()))?;
+        // 自由入力は ACP 側では cancelled だが、入力内容は監査のため記録する。
         let sent = option
             .map(|o| o.label.clone())
+            .or_else(|| text.map(str::to_owned))
             .unwrap_or_else(|| "キャンセル".to_owned());
         store.answer_decision(id, &sent, now())?;
         return Ok(sent);
@@ -42,8 +49,10 @@ pub fn submit(
         let local = local.ok_or_else(|| {
             Error::Local("serve --source local/both で起動していません".to_owned())
         })?;
-        if let Some(acp) = acp {
-            let cwd = local.session_cwd(raw)?;
+        let cwd = local.session_cwd(raw)?;
+        // cwd が不明で未ロードのセッションへ ACP prompt を投げると
+        // 応答が捨てられ黙って失敗するため、その場合は devin -r を使う。
+        if let Some(acp) = acp.filter(|a| cwd.is_some() || a.is_loaded(raw)) {
             match acp.prompt(raw, cwd.as_deref(), &message) {
                 Ok(()) => {}
                 Err(e) => {

@@ -12,6 +12,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use tokio::sync::broadcast;
 
+use crate::adapter::devin_acp;
 use crate::config::Config;
 use crate::store::{NewDecision, Store, now};
 use crate::types::{CardOption, DecisionKind, Session};
@@ -410,7 +411,8 @@ pub fn poll_once(
         if cardable {
             card_for_wait(store, &snap, &row, owned, notify_cfg)?;
         } else {
-            store.expire_pending_for(&snap.session.session_id)?;
+            store
+                .expire_pending_for(&snap.session.session_id, Some(devin_acp::FINGERPRINT_PERM))?;
         }
     }
     let _ = tx.send("update".to_owned());

@@ -178,10 +178,12 @@ async fn launch_handler(
 ) -> std::result::Result<Json<Value>, ApiError> {
     let prompt = req.prompt.trim().to_owned();
     if prompt.is_empty() {
-        return Err(ApiError(Error::Local("prompt が空です".to_owned())));
+        return Err(ApiError(Error::BadRequest("prompt が空です".to_owned())));
     }
     if prompt.len() > PROMPT_MAX {
-        return Err(ApiError(Error::Local("prompt が長すぎます".to_owned())));
+        return Err(ApiError(Error::BadRequest(
+            "prompt が長すぎます".to_owned(),
+        )));
     }
     let cwd_in = req
         .cwd
@@ -202,15 +204,18 @@ async fn launch_handler(
     let result = tokio::task::spawn_blocking(move || match source.as_str() {
         "local" => {
             let acp = acp.ok_or_else(|| {
-                Error::Local(
+                Error::BadRequest(
                     "ACP 未接続(serve --source local/both と credentials が必要)".to_owned(),
                 )
             })?;
             let cwd = match &cwd_in {
                 Some(c) => {
-                    let p = std::fs::canonicalize(c)?;
+                    let p = std::fs::canonicalize(c)
+                        .map_err(|_| Error::BadRequest(format!("cwd が存在しません: {c}")))?;
                     if !p.is_dir() {
-                        return Err(Error::Local(format!("{c} はディレクトリではありません")));
+                        return Err(Error::BadRequest(format!(
+                            "{c} はディレクトリではありません"
+                        )));
                     }
                     p
                 }
@@ -226,7 +231,7 @@ async fn launch_handler(
             let (id, url) = devin.create_session(&prompt, note_id.as_deref(), bypass)?;
             Ok(json!({"session_id": id, "url": url, "source": "cloud"}))
         }
-        _ => Err(Error::Local(format!("不明な source: {source}"))),
+        _ => Err(Error::BadRequest(format!("不明な source: {source}"))),
     })
     .await
     .map_err(|e| ApiError(Error::Io(std::io::Error::other(e.to_string()))))??;
@@ -283,6 +288,7 @@ impl IntoResponse for ApiError {
         let status = match &self.0 {
             Error::NotFound(_) => StatusCode::NOT_FOUND,
             Error::AlreadyAnswered(_) => StatusCode::CONFLICT,
+            Error::BadRequest(_) => StatusCode::BAD_REQUEST,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (status, Json(json!({"error": self.0.to_string()}))).into_response()
